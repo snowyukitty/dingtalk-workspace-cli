@@ -508,12 +508,22 @@ jobs:
         if: steps.classify.outputs.changelog_only != 'true' && steps.classify.outputs.docs_only != 'true'
         run: node .github/reviewer-routing.test.js
 
-  test-focused:
-    name: Test (changed packages)
+  test-focused-shard:
+    name: "Test (changed packages: ${{ matrix.shard }})"
     needs: lint
     if: ${{ needs.lint.outputs.changelog_only != 'true' && needs.lint.outputs.docs_only != 'true' && needs.lint.outputs.full_suite != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - app
+          - generators
+          - helpers
+          - cli
+          - smoke
+          - remaining
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -546,19 +556,58 @@ jobs:
         shell: bash
         env:
           DWS_PACKAGE_VERSION: 0.0.0-test
+          TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
-          package_output="$(
+          impacted_output="$(
             ./scripts/ci/changed-test-packages.sh \
               list "$TEST_BASE_REF" "$TEST_HEAD_REF"
           )"
-          if [ -z "$package_output" ]; then
-            echo "No buildable Go package is affected by this revision." \
+          shard_output="$(./scripts/ci/test-packages.sh list "$TEST_SHARD")"
+          if [ -z "$impacted_output" ] || [ -z "$shard_output" ]; then
+            echo "No buildable Go package is affected in shard $TEST_SHARD." \
               >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          mapfile -t packages <<< "$package_output"
-          go test -v -race -count=1 -timeout=15m "${packages[@]}"
+          impacted_file="$(mktemp)"
+          shard_file="$(mktemp)"
+          trap 'rm -f "$impacted_file" "$shard_file"' EXIT
+          printf '%s\n' "$impacted_output" | LC_ALL=C sort -u > "$impacted_file"
+          printf '%s\n' "$shard_output" | LC_ALL=C sort -u > "$shard_file"
+          mapfile -t packages < <(comm -12 "$impacted_file" "$shard_file")
+          if [ "${#packages[@]}" -eq 0 ]; then
+            echo "No buildable Go package is affected in shard $TEST_SHARD." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$TEST_SHARD" = "app" ]; then
+            test "${#packages[@]}" -eq 1
+            ./scripts/ci/run-app-race-tests.sh run "${packages[0]}"
+            exit 0
+          fi
+          timeout_budget=12m
+          if [ "$TEST_SHARD" = "cli" ] ||
+             [ "$TEST_SHARD" = "smoke" ]; then
+            timeout_budget=15m
+          fi
+          go test -v -race -count=1 -timeout="$timeout_budget" "${packages[@]}"
+
+  test-focused:
+    name: Test (changed packages)
+    needs:
+      - lint
+      - test-focused-shard
+    if: ${{ always() && needs.lint.result == 'success' && needs.lint.outputs.changelog_only != 'true' && needs.lint.outputs.docs_only != 'true' && needs.lint.outputs.full_suite != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Verify changed-package shards
+        env:
+          SHARD_RESULT: ${{ needs.test-focused-shard.result }}
+        run: |
+          printf 'changed-package shards: %s\n' "$SHARD_RESULT"
+          test "$SHARD_RESULT" = success
 
   test-race:
     name: "Test (race: ${{ matrix.shard }})"

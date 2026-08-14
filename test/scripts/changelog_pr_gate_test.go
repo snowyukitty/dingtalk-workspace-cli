@@ -1201,17 +1201,37 @@ func TestChangelogPRFastPathWorkflowContract(t *testing.T) {
 		t.Error("Code Admission must not suppress required contexts with paths-ignore")
 	}
 
-	focusedStart := strings.Index(admission, "\n  test-focused:\n")
+	focusedStart := strings.Index(admission, "\n  test-focused-shard:\n")
 	focusedEnd := strings.Index(admission, "\n  test-race:\n")
 	if focusedStart < 0 || focusedEnd <= focusedStart {
 		t.Fatal("Code Admission workflow missing focused test job boundaries")
 	}
 	focusedJob := admission[focusedStart:focusedEnd]
-	if !strings.Contains(focusedJob, "timeout-minutes: 20") {
-		t.Error("focused test job must allow the scoped race suite up to 20 minutes")
-	}
-	if !strings.Contains(focusedJob, `go test -v -race -count=1 -timeout=15m "${packages[@]}"`) {
-		t.Error("focused race tests must retain enough package-level time for internal/app")
+	for _, want := range []string{
+		`name: "Test (changed packages: ${{ matrix.shard }})"`,
+		"timeout-minutes: 20",
+		"- app",
+		"- generators",
+		"- helpers",
+		"- cli",
+		"- smoke",
+		"- remaining",
+		`comm -12 "$impacted_file" "$shard_file"`,
+		`if [ "$TEST_SHARD" = "app" ]; then`,
+		`./scripts/ci/run-app-race-tests.sh run "${packages[0]}"`,
+		"timeout_budget=12m",
+		`if [ "$TEST_SHARD" = "cli" ] ||`,
+		`[ "$TEST_SHARD" = "smoke" ]; then`,
+		"timeout_budget=15m",
+		`go test -v -race -count=1 -timeout="$timeout_budget" "${packages[@]}"`,
+		"name: Test (changed packages)",
+		"- test-focused-shard",
+		`SHARD_RESULT: ${{ needs.test-focused-shard.result }}`,
+		`test "$SHARD_RESULT" = success`,
+	} {
+		if !strings.Contains(focusedJob, want) {
+			t.Errorf("focused race shards must retain contract %q", want)
+		}
 	}
 
 	raceStart := focusedEnd
