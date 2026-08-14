@@ -273,6 +273,26 @@ func TestCrossPlatformCoverageDocReadbackDefensiveEdges(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit has more overrides inconsistent total count", func(t *testing.T) {
+		testseam.Swap(t, &docVerifyDelays, []time.Duration{})
+		caller := &docCoverageCaller{responses: map[string][]map[string]any{"list_document_blocks": {
+			{"blocks": []any{map[string]any{"id": "first"}}, "hasMore": true, "totalCount": 1},
+			{"blocks": []any{map[string]any{"id": "second"}}, "hasMore": false, "totalCount": 2},
+		}}}
+		if err := runDocCoverage(t, Update, caller, "--node", "n", "--command", "block_delete", "--block-id", "target", "--yes"); err != nil {
+			t.Fatal(err)
+		}
+		reads := 0
+		for _, call := range caller.history {
+			if call.tool == "list_document_blocks" {
+				reads++
+			}
+		}
+		if reads != 2 {
+			t.Fatalf("read calls = %d, want both explicitly advertised pages", reads)
+		}
+	})
+
 	t.Run("block read safety limit", func(t *testing.T) {
 		testseam.Swap(t, &docVerifyDelays, []time.Duration{})
 		pages := make([]map[string]any, docBlockReadMaxItems/docBlockReadPageSize)

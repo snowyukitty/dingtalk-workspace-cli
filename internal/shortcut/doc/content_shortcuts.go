@@ -850,8 +850,10 @@ func readAllDocumentBlocks(rt *shortcut.RuntimeContext, base map[string]any) (ma
 		if known && !hasMore {
 			return map[string]any{"blocks": all, "hasMore": false, "totalCount": len(all)}, nil
 		}
-		if total, ok := nestedNonNegativeInt(page, "totalCount", "total_count"); ok && len(all) >= total {
-			return map[string]any{"blocks": all, "hasMore": false, "totalCount": total}, nil
+		if !known {
+			if total, ok := nestedNonNegativeInt(page, "totalCount", "total_count"); ok && len(all) >= total {
+				return map[string]any{"blocks": all, "hasMore": false, "totalCount": total}, nil
+			}
 		}
 		if !known && len(blocks) < docBlockReadPageSize {
 			return map[string]any{"blocks": all, "hasMore": false, "totalCount": len(all)}, nil

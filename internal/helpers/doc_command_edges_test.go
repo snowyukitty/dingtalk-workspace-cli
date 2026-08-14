@@ -342,6 +342,18 @@ func TestCrossPlatformCoverageDocMediaReadbackDefensiveEdges(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit has more overrides inconsistent total count", func(t *testing.T) {
+		caller := &scriptedToolCaller{steps: []scriptedToolStep{
+			{text: `{"blocks":[{"id":"first"}],"hasMore":true,"totalCount":1}`},
+			{text: `{"blocks":[{"id":"second"}],"hasMore":false,"totalCount":2}`},
+		}}
+		installScriptedCaller(t, caller)
+		got, err := readAllDocBlocksForVerification(ctx, "node")
+		if err != nil || len(got) != 2 || caller.calls != 2 {
+			t.Fatalf("blocks=%d calls=%d err=%v, want both explicitly advertised pages", len(got), caller.calls, err)
+		}
+	})
+
 	t.Run("page identity accepts nested and JSONML block IDs", func(t *testing.T) {
 		if got := docBlockPageIdentity([]any{map[string]any{"element": map[string]any{"blockId": "nested-block"}}}); got != `["nested-block"]` {
 			t.Fatalf("nested block page identity = %q", got)
@@ -400,6 +412,9 @@ func TestCrossPlatformCoverageDocMediaReadbackDefensiveEdges(t *testing.T) {
 	}
 	if nestedDocString(map[string]any{"x": []any{map[string]any{"id": " nested "}}}, "id") != "nested" || nestedDocString(3, "id") != "" {
 		t.Fatal("nested string traversal failed")
+	}
+	if got := nestedDocString(map[string]any{"z": map[string]any{"id": "last"}, "a": map[string]any{"id": "first"}}, "id"); got != "first" {
+		t.Fatalf("nested string traversal = %q, want deterministic key order", got)
 	}
 	if got := insertedDocBlockID(map[string]any{"id": "document", "result": map[string]any{"data": map[string]any{"blockId": " block "}}}); got != "block" {
 		t.Fatalf("trusted inserted block ID = %q, want block", got)

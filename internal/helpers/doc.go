@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -802,8 +803,10 @@ func readAllDocBlocksForVerification(ctx context.Context, nodeID string) ([]any,
 		if hasMoreKnown && !hasMore {
 			return all, nil
 		}
-		if total, ok := docNumberAsInt(payload["totalCount"]); ok && len(all) >= total {
-			return all, nil
+		if !hasMoreKnown {
+			if total, ok := docNumberAsInt(payload["totalCount"]); ok && len(all) >= total {
+				return all, nil
+			}
 		}
 		if !hasMoreKnown && len(blocks) < pageSize {
 			return all, nil
@@ -872,8 +875,13 @@ func nestedDocString(value any, keys ...string) string {
 				return strings.TrimSpace(text)
 			}
 		}
-		for _, child := range typed {
-			if text := nestedDocString(child, keys...); text != "" {
+		orderedKeys := make([]string, 0, len(typed))
+		for key := range typed {
+			orderedKeys = append(orderedKeys, key)
+		}
+		sort.Strings(orderedKeys)
+		for _, key := range orderedKeys {
+			if text := nestedDocString(typed[key], keys...); text != "" {
 				return text
 			}
 		}
