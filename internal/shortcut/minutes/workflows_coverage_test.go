@@ -586,7 +586,7 @@ func TestCrossPlatformCoverageMinutesExportPackBranchesE2E(t *testing.T) {
 }
 
 func TestCrossPlatformCoverageMinutesExportPathAndJSONFaults(t *testing.T) {
-	if _, _, _, err := prepareExportTarget("../escape"); err == nil {
+	if _, _, _, err := prepareExportTarget(filepath.Join("..", "escape")); err == nil {
 		t.Fatal("unsafe target accepted")
 	}
 	for _, test := range []struct {
@@ -612,7 +612,7 @@ func TestCrossPlatformCoverageMinutesExportPathAndJSONFaults(t *testing.T) {
 			}
 		}},
 		{name: "escape", run: func(t *testing.T) {
-			testseam.Swap(t, &minutesRel, func(string, string) (string, error) { return "../escape", nil })
+			testseam.Swap(t, &minutesRel, func(string, string) (string, error) { return filepath.Join("..", "escape"), nil })
 			if _, _, _, err := prepareExportTarget("pack"); err == nil {
 				t.Fatal("rel escape accepted")
 			}
@@ -624,7 +624,7 @@ func TestCrossPlatformCoverageMinutesExportPathAndJSONFaults(t *testing.T) {
 			}
 		}},
 		{name: "parent", run: func(t *testing.T) {
-			testseam.Swap(t, &minutesRel, func(string, string) (string, error) { return "parent/pack", nil })
+			testseam.Swap(t, &minutesRel, func(string, string) (string, error) { return filepath.Join("parent", "pack"), nil })
 			testseam.Swap(t, &minutesLstat, func(string) (os.FileInfo, error) { return nil, errors.New("parent") })
 			if _, _, _, err := prepareExportTarget("pack"); err == nil {
 				t.Fatal("unsafe parent accepted")
