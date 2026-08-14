@@ -15,7 +15,10 @@ import (
 // drop the envelope fields used by the record projector, turning a successful
 // read into an empty collection. Keep every remote request on one service page
 // and aggregate only after each page has passed the CLI's shape validation.
-const recordQueryServicePageSize = 20
+const (
+	recordQueryServicePageSize          = 20
+	recordQueryMaxConsecutiveEmptyPages = 3
+)
 
 type recordQueryWindow struct {
 	Records    []map[string]any
@@ -36,6 +39,7 @@ func queryRecordWindow(rt *shortcut.RuntimeContext, params map[string]any, limit
 		seen[cursor] = true
 	}
 	window := recordQueryWindow{Records: make([]map[string]any, 0, limit)}
+	consecutiveEmptyPages := 0
 
 	for len(window.Records) < limit {
 		pageSize := minInt(recordQueryServicePageSize, limit-len(window.Records))
@@ -66,6 +70,17 @@ func queryRecordWindow(rt *shortcut.RuntimeContext, params map[string]any, limit
 			window.HasMore = false
 			window.NextCursor = ""
 			return window, nil
+		}
+		if len(records) == 0 {
+			consecutiveEmptyPages++
+			if consecutiveEmptyPages >= recordQueryMaxConsecutiveEmptyPages {
+				return recordQueryWindow{}, fmt.Errorf(
+					"query_records made no progress for %d consecutive pages",
+					consecutiveEmptyPages,
+				)
+			}
+		} else {
+			consecutiveEmptyPages = 0
 		}
 		next := responseCursor(data)
 		if next == "" {

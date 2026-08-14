@@ -232,6 +232,7 @@ func TestCrossPlatformCoverageMinutesWorkflowCompletion(t *testing.T) {
 	}
 	for _, data := range []map[string]any{
 		{"success": false, "errorMsg": "denied"},
+		{"success": "yes"},
 		{"success": true, "result": "bad"},
 		{"success": true, "result": map[string]any{}},
 		{"success": true, "result": map[string]any{"resultMap": map[string]any{}}},

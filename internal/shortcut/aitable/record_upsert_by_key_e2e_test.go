@@ -404,6 +404,26 @@ func TestCrossPlatformCoverageRecordQueryFailureAndContinuationBranches(t *testi
 		}
 	})
 
+	t.Run("changing cursors cannot hide sustained empty pages", func(t *testing.T) {
+		caller := &upsertByKeyCaller{callFn: func(call int, _, tool string, _ map[string]any) (string, error) {
+			if tool != "query_records" {
+				return "", fmt.Errorf("unexpected tool %s", tool)
+			}
+			return fmt.Sprintf(
+				`{"success":true,"data":{"records":[],"hasMore":true,"nextCursor":"empty-%d"}}`,
+				call,
+			), nil
+		}}
+		helpers.InitDepsForTest(t, caller)
+		rt := shortcut.RuntimeContextForTest(&cobra.Command{Use: "query"}, RecordQuery)
+		if _, err := queryRecordWindow(rt, map[string]any{}, 1); err == nil || !strings.Contains(err.Error(), "no progress") {
+			t.Fatalf("sustained empty pages error = %v", err)
+		}
+		if len(caller.calls) != recordQueryMaxConsecutiveEmptyPages {
+			t.Fatalf("query calls = %d, want %d", len(caller.calls), recordQueryMaxConsecutiveEmptyPages)
+		}
+	})
+
 	t.Run("invalid shortcut limit", func(t *testing.T) {
 		caller := &upsertByKeyCaller{}
 		helpers.InitDepsForTest(t, caller)
