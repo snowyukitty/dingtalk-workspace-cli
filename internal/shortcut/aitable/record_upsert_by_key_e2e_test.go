@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -296,7 +297,7 @@ func pagedRecordQueryResponse(t *testing.T, records []map[string]any, args map[s
 	return string(raw)
 }
 
-func runRecordQueryShortcutCLI(t *testing.T, caller *upsertByKeyCaller, limit int) (map[string]any, error) {
+func runRecordQueryShortcutCLI(t *testing.T, caller *upsertByKeyCaller, limit int, extra ...string) (map[string]any, error) {
 	t.Helper()
 	helpers.InitDepsForTest(t, caller)
 	root := &cobra.Command{Use: "dws", SilenceErrors: true, SilenceUsage: true}
@@ -307,7 +308,8 @@ func runRecordQueryShortcutCLI(t *testing.T, caller *upsertByKeyCaller, limit in
 	stdout := &bytes.Buffer{}
 	root.SetOut(stdout)
 	root.SetErr(&bytes.Buffer{})
-	root.SetArgs([]string{"aitable", "+record-query", "--base-id", "base", "--table-id", "table", "--limit", fmt.Sprint(limit)})
+	args := []string{"aitable", "+record-query", "--base-id", "base", "--table-id", "table", "--limit", fmt.Sprint(limit)}
+	root.SetArgs(append(args, extra...))
 	err := root.Execute()
 	if stdout.Len() == 0 {
 		return nil, err
@@ -343,6 +345,33 @@ func TestCrossPlatformCoverageRecordQueryServicePageBoundariesE2E(t *testing.T) 
 				t.Fatalf("record query size %d calls=%d payload=%#v, want calls=%d", size, len(caller.calls), payload, wantCalls)
 			}
 		})
+	}
+}
+
+func TestCrossPlatformCoverageRecordQueryExactIDsIgnoreResidualContinuationE2E(t *testing.T) {
+	caller := &upsertByKeyCaller{callFn: func(call int, _, tool string, args map[string]any) (string, error) {
+		if tool != "query_records" {
+			return "", fmt.Errorf("unexpected tool %s", tool)
+		}
+		if call != 0 {
+			return "", errors.New("exact-ID query followed residual continuation")
+		}
+		if args["limit"] != 2 {
+			t.Fatalf("exact-ID service limit = %#v, want 2", args["limit"])
+		}
+		ids, ok := args["recordIds"].([]string)
+		if !ok || !slices.Equal(ids, []string{"r1", "r2"}) {
+			t.Fatalf("exact-ID request IDs = %#v", args["recordIds"])
+		}
+		return `{"success":true,"data":{"records":[{"recordId":"r1"},{"recordId":"r2"}],"hasMore":true,"nextCursor":"residual"}}`, nil
+	}}
+	payload, err := runRecordQueryShortcutCLI(t, caller, 100, "--record-ids", "r2,r1,r2")
+	data, _ := payload["data"].(map[string]any)
+	if err != nil || len(caller.calls) != 1 || data["hasMore"] != false || data["size"] != float64(2) {
+		t.Fatalf("exact-ID payload=%#v calls=%d err=%v", payload, len(caller.calls), err)
+	}
+	if _, exists := data["nextCursor"]; exists {
+		t.Fatalf("exact-ID payload retained residual cursor: %#v", payload)
 	}
 }
 
@@ -435,6 +464,51 @@ func TestCrossPlatformCoverageRecordQueryFailureAndContinuationBranches(t *testi
 		rt := shortcut.RuntimeContextForTest(cmd, RecordQuery)
 		if err := executeRecordQuery(rt, map[string]any{}); err == nil {
 			t.Fatal("invalid shortcut limit accepted")
+		}
+	})
+
+	t.Run("invalid exact-ID request", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name   string
+			params map[string]any
+			want   string
+		}{
+			{name: "wrong type", params: map[string]any{"recordIds": 1}, want: "string list"},
+			{name: "empty", params: map[string]any{"recordIds": []string{" "}}, want: "至少包含一个非空 recordId"},
+			{name: "over service limit", params: map[string]any{"recordIds": recordIDFixtures(recordBatchSize + 1)}, want: "at most 100 unique IDs"},
+		} {
+			t.Run(testCase.name, func(t *testing.T) {
+				caller := &upsertByKeyCaller{}
+				helpers.InitDepsForTest(t, caller)
+				rt := shortcut.RuntimeContextForTest(&cobra.Command{Use: "query"}, RecordQuery)
+				err := executeRecordQuery(rt, testCase.params)
+				if err == nil || !strings.Contains(err.Error(), testCase.want) {
+					t.Fatalf("exact-ID request error = %v, want %q", err, testCase.want)
+				}
+				if len(caller.calls) != 0 {
+					t.Fatalf("invalid exact-ID request made %d service calls", len(caller.calls))
+				}
+			})
+		}
+	})
+
+	t.Run("invalid exact-ID response", func(t *testing.T) {
+		caller := &upsertByKeyCaller{callFn: func(_ int, _, tool string, _ map[string]any) (string, error) {
+			if tool != "query_records" {
+				return "", fmt.Errorf("unexpected tool %s", tool)
+			}
+			return `{"success":true,"data":{"records":[{"recordId":"other"}]}}`, nil
+		}}
+		if _, err := runRecordQueryShortcutCLI(t, caller, 100, "--record-ids", "r1"); err == nil || !strings.Contains(err.Error(), "unexpected recordId") {
+			t.Fatalf("unexpected exact-ID response error = %v", err)
+		}
+
+		if _, err := validateExactRecordQuery([]map[string]any{{}}, []string{"r1"}); err == nil || !strings.Contains(err.Error(), "missing recordId") {
+			t.Fatalf("missing exact-ID response error = %v", err)
+		}
+		duplicate := []map[string]any{{"recordId": "r1"}, {"recordId": "r1"}}
+		if _, err := validateExactRecordQuery(duplicate, []string{"r1", "r2"}); err == nil || !strings.Contains(err.Error(), "duplicate recordId") {
+			t.Fatalf("duplicate exact-ID response error = %v", err)
 		}
 	})
 

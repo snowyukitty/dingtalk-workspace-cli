@@ -126,9 +126,34 @@ func executeRecordQuery(rt *shortcut.RuntimeContext, params map[string]any) erro
 	if limit < 1 || limit > recordBatchSize {
 		return fmt.Errorf("--limit must be in [1,%d], got %d", recordBatchSize, limit)
 	}
+	requestedIDs, exactIDQuery, err := recordQueryRequestedIDs(params)
+	if err != nil {
+		return err
+	}
+	if exactIDQuery {
+		if len(requestedIDs) > recordBatchSize {
+			return fmt.Errorf("--record-ids accepts at most %d unique IDs, got %d", recordBatchSize, len(requestedIDs))
+		}
+		params = cloneAnyMap(params)
+		params["recordIds"] = requestedIDs
+		limit = minInt(limit, len(requestedIDs))
+	}
 	window, err := queryRecordWindow(rt, params, limit)
 	if err != nil {
 		return err
+	}
+	if exactIDQuery {
+		complete, err := validateExactRecordQuery(window.Records, requestedIDs)
+		if err != nil {
+			return err
+		}
+		if complete {
+			// The service may advertise unrelated continuation after every
+			// requested ID is already present. Exact-ID completion is stronger
+			// evidence than that residual pager state.
+			window.HasMore = false
+			window.NextCursor = ""
+		}
 	}
 	records := make([]any, 0, len(window.Records))
 	for _, record := range window.Records {
@@ -148,6 +173,44 @@ func executeRecordQuery(rt *shortcut.RuntimeContext, params map[string]any) erro
 		"status":  "success",
 		"data":    data,
 	})
+}
+
+func recordQueryRequestedIDs(params map[string]any) ([]string, bool, error) {
+	raw, exists := params["recordIds"]
+	if !exists {
+		return nil, false, nil
+	}
+	values, ok := raw.([]string)
+	if !ok {
+		return nil, false, fmt.Errorf("recordIds must be a string list, got %T", raw)
+	}
+	ids, err := parseRecordIDs(values)
+	if err != nil {
+		return nil, false, err
+	}
+	return ids, true, nil
+}
+
+func validateExactRecordQuery(records []map[string]any, requestedIDs []string) (bool, error) {
+	wanted := make(map[string]bool, len(requestedIDs))
+	for _, id := range requestedIDs {
+		wanted[id] = true
+	}
+	seen := make(map[string]bool, len(records))
+	for index, record := range records {
+		id := recordID(record)
+		if id == "" {
+			return false, fmt.Errorf("query_records exact-ID result %d is missing recordId", index)
+		}
+		if !wanted[id] {
+			return false, fmt.Errorf("query_records exact-ID result contains unexpected recordId %q", id)
+		}
+		if seen[id] {
+			return false, fmt.Errorf("query_records exact-ID result contains duplicate recordId %q", id)
+		}
+		seen[id] = true
+	}
+	return len(seen) == len(wanted), nil
 }
 
 func queryAllRecords(rt *shortcut.RuntimeContext, params map[string]any, maxRecords int) ([]map[string]any, error) {
