@@ -442,10 +442,9 @@ func TestCrossPlatformCoverageMinutesArtifactWaitAndOutput(t *testing.T) {
 		t.Fatalf("cancel failures=%#v", failures)
 	}
 	cmd = &cobra.Command{Use: "wait"}
-	cmd.SetContext(context.Background())
 	rt = shortcut.RuntimeContextForTest(cmd, ExportPack)
 	if err := waitMinutesInterval(rt, 0); err != nil {
-		t.Fatalf("timer wait: %v", err)
+		t.Fatalf("timer wait with unset command context: %v", err)
 	}
 
 	cmd.SetOut(minutesFailWriter{})
