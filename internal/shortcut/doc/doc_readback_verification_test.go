@@ -120,14 +120,24 @@ func TestCrossPlatformCoverageDocReplacePreflightIsGloballyUnique(t *testing.T) 
 
 func TestCrossPlatformCoverageDocVerificationPreservesMeaning(t *testing.T) {
 	expected := "[\"p\",{},\"text\"]"
-	serverExpanded := "[\"p\",{\"uuid\":\"generated\"},[\"span\",{\"data-type\":\"text\"},[\"span\",{\"data-type\":\"leaf\"},\"text\"]]]"
+	serverExpanded := "[\"p\",{\"uuid\":\"generated\",\"style\":{}},[\"span\",{\"data-type\":\"text\"},[\"span\",{\"data-type\":\"leaf\"},\"text\"]]]"
 	if normalizeJSONMLForVerification(expected) != normalizeJSONMLForVerification(serverExpanded) {
 		t.Fatal("generated JSONML text wrappers should not change document meaning")
+	}
+	defaultFree := `[["hr",{}],["code",{}],["table",{},["tr",{},["tc",{},["p",{},"cell"]]]]]`
+	serverDefaulted := `[["hr",{"sz":1}],["code",{"code":"","syntax":"plaintext","theme":"default","wrap":true,"showLineNumber":true,"fold":false}],["table",{},["tr",{},["tc",{"colSpan":1,"rowSpan":1,"vAlign":"middle"},["p",{},"cell"]]]]]`
+	if !verifyUpdatedDocumentContent(map[string]any{"jsonml": serverDefaulted}, defaultFree, "overwrite", "jsonml") {
+		t.Fatal("server-generated JSONML schema defaults should not fail readback verification")
 	}
 	linkA := "[\"a\",{\"href\":\"https://example.com/a\"},\"text\"]"
 	linkB := "[\"a\",{\"href\":\"https://example.com/b\"},\"text\"]"
 	if normalizeJSONMLForVerification(linkA) == normalizeJSONMLForVerification(linkB) {
 		t.Fatal("semantic JSONML attributes were ignored")
+	}
+	tableA := `[["table",{"jc":"center"},["tr",{},["tc",{},["p",{},"cell"]]]]]`
+	tableB := `[["table",{"jc":"right"},["tr",{},["tc",{},["p",{},"cell"]]]]]`
+	if normalizeJSONMLForVerification(tableA) == normalizeJSONMLForVerification(tableB) {
+		t.Fatal("semantic JSONML table alignment was ignored")
 	}
 	codeA := "~~~go\n  return nil\n~~~"
 	codeB := "~~~go\nreturn nil\n~~~"

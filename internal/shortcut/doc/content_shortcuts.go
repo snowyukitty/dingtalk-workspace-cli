@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 	"unicode"
@@ -1382,6 +1383,7 @@ func normalizeJSONMLForVerification(raw string) string {
 			if len(typed) > 1 {
 				if declared, ok := typed[1].(map[string]any); ok {
 					attrs, _ = normalize(declared).(map[string]any)
+					attrs = removeGeneratedJSONMLDefaults(tag, attrs)
 					start = 2
 				}
 			}
@@ -1408,7 +1410,7 @@ func normalizeJSONMLForVerification(raw string) string {
 				if normalizedKey == "uuid" || normalizedKey == "blockid" || normalizedKey == "elementid" || normalizedKey == "index" {
 					continue
 				}
-				out[key] = normalize(child)
+				out[normalizedKey] = normalize(child)
 			}
 			return out
 		case string:
@@ -1422,6 +1424,38 @@ func normalizeJSONMLForVerification(raw string) string {
 	return string(encoded)
 }
 
+var generatedJSONMLAttributeDefaults = map[string]map[string]any{
+	"hr": {
+		"sz": float64(1),
+	},
+	"tc": {
+		"colspan": float64(1), "rowspan": float64(1), "valign": "middle",
+	},
+	"code": {
+		"code": "", "syntax": "plaintext", "theme": "default",
+		"wrap": true, "showlinenumber": true, "fold": false,
+	},
+}
+
+// removeGeneratedJSONMLDefaults drops only defaults declared by the reviewed
+// JSONML schema, plus empty server style objects. Other attributes remain part
+// of the semantic fingerprint so links, formatting, and table layout stay
+// strict.
+func removeGeneratedJSONMLDefaults(tag string, attrs map[string]any) map[string]any {
+	defaults := generatedJSONMLAttributeDefaults[strings.ToLower(tag)]
+	out := make(map[string]any, len(attrs))
+	for key, value := range attrs {
+		if object, ok := value.(map[string]any); ok && len(object) == 0 {
+			continue
+		}
+		if defaultValue, ok := defaults[key]; ok && reflect.DeepEqual(value, defaultValue) {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
 func isGeneratedTextSpan(attrs map[string]any) bool {
 	if len(attrs) == 0 {
 		return true
@@ -1429,7 +1463,7 @@ func isGeneratedTextSpan(attrs map[string]any) bool {
 	if len(attrs) != 1 {
 		return false
 	}
-	value, ok := attrs["data-type"].(string)
+	value, ok := attrs["datatype"].(string)
 	return ok && (value == "text" || value == "leaf")
 }
 
