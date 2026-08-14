@@ -78,6 +78,7 @@ func TestCrossPlatformCoverageDocUploadAndMediaErrorEdges(t *testing.T) {
 	oldPut, oldGet := httpPutFile, httpGetFile
 	t.Cleanup(func() { httpPutFile, httpGetFile = oldPut, oldGet })
 	testseam.Swap(t, &helperSleep, func(time.Duration) {})
+	testseam.Swap(t, &docMediaVerifyWait, func(context.Context, time.Duration) error { return nil })
 	file := filepath.Join(t.TempDir(), "file.txt")
 	if err := os.WriteFile(file, []byte("content"), 0o600); err != nil {
 		t.Fatal(err)
@@ -291,6 +292,7 @@ func TestCrossPlatformCoverageDefaultDocHTTPTransportEdges(t *testing.T) {
 
 func TestCrossPlatformCoverageDocMediaReadbackDefensiveEdges(t *testing.T) {
 	testseam.Swap(t, &helperSleep, func(time.Duration) {})
+	testseam.Swap(t, &docMediaVerifyWait, func(context.Context, time.Duration) error { return nil })
 	ctx := context.Background()
 
 	for _, tc := range []struct {
@@ -425,6 +427,26 @@ func TestCrossPlatformCoverageDocMediaReadbackDefensiveEdges(t *testing.T) {
 		if ok != tc.want {
 			t.Fatalf("docNumberAsInt(%#v) ok=%v want=%v", tc.value, ok, tc.want)
 		}
+	}
+}
+
+func TestCrossPlatformCoverageDocMediaReadbackStopsOnCancellation(t *testing.T) {
+	if err := waitForDocVerification(nil, time.Nanosecond); err != nil {
+		t.Fatalf("completed verification wait = %v", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitForDocVerification(cancelled, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled verification wait = %v, want context.Canceled", err)
+	}
+
+	caller := &scriptedToolCaller{steps: []scriptedToolStep{{text: `{"blocks":[],"hasMore":false}`}}}
+	installScriptedCaller(t, caller)
+	if _, err := verifyInsertedDocMedia(cancelled, "node", "", "missing", ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled media verification = %v, want context.Canceled", err)
+	}
+	if caller.calls != 1 {
+		t.Fatalf("cancelled media verification calls = %d, want 1", caller.calls)
 	}
 }
 

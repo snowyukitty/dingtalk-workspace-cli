@@ -728,6 +728,8 @@ func docMediaInsertVerificationError(nodeID, resourceID, resourceURL, fileName s
 	)
 }
 
+var docMediaVerifyWait = waitForDocVerification
+
 func verifyInsertedDocMedia(ctx context.Context, nodeID, blockID, resourceID, resourceURL string) (string, error) {
 	delays := []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
 	var lastErr error
@@ -742,13 +744,29 @@ func verifyInsertedDocMedia(ctx context.Context, nodeID, blockID, resourceID, re
 			}
 		}
 		if attempt < len(delays) {
-			helperSleep(delays[attempt])
+			if err := docMediaVerifyWait(ctx, delays[attempt]); err != nil {
+				return "", err
+			}
 		}
 	}
 	if lastErr != nil {
 		return "", fmt.Errorf("媒体资源在有界回读窗口内仍无法读取: %w", lastErr)
 	}
 	return "", fmt.Errorf("媒体资源在有界回读窗口内仍不可见")
+}
+
+func waitForDocVerification(ctx context.Context, delay time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func readAllDocBlocksForVerification(ctx context.Context, nodeID string) ([]any, error) {

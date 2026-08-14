@@ -5,6 +5,7 @@ package doc
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,7 +34,7 @@ var (
 	docMkdirTemp    = os.MkdirTemp
 	docRemoveAll    = os.RemoveAll
 	docDownload     = localio.Download
-	docVerifySleep  = time.Sleep
+	docVerifyWait   = waitForDocVerification
 	docVerifyDelays = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
 	docMarkdown     = goldmark.New(
 		goldmark.WithExtensions(extension.Table),
@@ -797,13 +798,29 @@ func readDocVerification(rt *shortcut.RuntimeContext, tool string, rawParams map
 			}
 		}
 		if attempt < len(docVerifyDelays) {
-			docVerifySleep(docVerifyDelays[attempt])
+			if err := docVerifyWait(rt.Command().Context(), docVerifyDelays[attempt]); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if lastErr != nil {
 		return nil, lastErr
 	}
 	return last, nil
+}
+
+func waitForDocVerification(ctx context.Context, delay time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func readAllDocumentBlocks(rt *shortcut.RuntimeContext, base map[string]any) (map[string]any, error) {

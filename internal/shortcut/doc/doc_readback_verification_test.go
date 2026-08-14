@@ -4,6 +4,7 @@
 package doc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,11 +12,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/helpers"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/shortcut"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/testseam"
+	"github.com/spf13/cobra"
 )
 
 func TestCrossPlatformCoverageDocReadbackRetriesStaleContent(t *testing.T) {
-	testseam.Swap(t, &docVerifySleep, func(time.Duration) {})
+	testseam.Swap(t, &docVerifyWait, func(context.Context, time.Duration) error { return nil })
 	testseam.Swap(t, &docVerifyDelays, []time.Duration{time.Millisecond})
 	caller := &docCoverageCaller{responses: map[string][]map[string]any{
 		"get_document_content": {{"markdown": "old"}, {"markdown": "old\nnew"}},
@@ -34,8 +38,34 @@ func TestCrossPlatformCoverageDocReadbackRetriesStaleContent(t *testing.T) {
 	}
 }
 
+func TestCrossPlatformCoverageDocReadbackStopsOnCancellation(t *testing.T) {
+	if err := waitForDocVerification(nil, time.Nanosecond); err != nil {
+		t.Fatalf("completed verification wait = %v", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitForDocVerification(cancelled, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled verification wait = %v, want context.Canceled", err)
+	}
+
+	cmd := &cobra.Command{Use: "verify"}
+	cmd.SetContext(cancelled)
+	caller := &docCoverageCaller{responses: map[string][]map[string]any{
+		"get_document_content": {{"markdown": "stale"}},
+	}}
+	helpers.InitDeps(caller)
+	rt := shortcut.RuntimeContextForTest(cmd, Update)
+	_, err := readDocVerification(rt, "get_document_content", map[string]any{"nodeId": "n"}, func(map[string]any) bool { return false })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled document verification = %v, want context.Canceled", err)
+	}
+	if len(caller.history) != 1 {
+		t.Fatalf("cancelled document verification calls = %d, want 1", len(caller.history))
+	}
+}
+
 func TestCrossPlatformCoverageDocDeleteReadbackConsumesEveryPage(t *testing.T) {
-	testseam.Swap(t, &docVerifySleep, func(time.Duration) {})
+	testseam.Swap(t, &docVerifyWait, func(context.Context, time.Duration) error { return nil })
 	testseam.Swap(t, &docVerifyDelays, []time.Duration{time.Millisecond})
 	firstPage := make([]any, 50)
 	for index := range firstPage {
@@ -190,7 +220,7 @@ func TestCrossPlatformCoverageVersionRevertRequiresTargetEvidence(t *testing.T) 
 }
 
 func TestCrossPlatformCoverageDocReadbackDefensiveEdges(t *testing.T) {
-	testseam.Swap(t, &docVerifySleep, func(time.Duration) {})
+	testseam.Swap(t, &docVerifyWait, func(context.Context, time.Duration) error { return nil })
 	for _, tc := range []struct {
 		name      string
 		responses []map[string]any

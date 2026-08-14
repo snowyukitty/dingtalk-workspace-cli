@@ -113,7 +113,7 @@ func runDocCoverageInput(t *testing.T, declaration shortcut.Shortcut, caller *do
 
 func runDocCoveragePath(t *testing.T, declaration shortcut.Shortcut, caller *docCoverageCaller, input io.Reader, commandPath string, args ...string) error {
 	t.Helper()
-	testseam.Swap(t, &docVerifySleep, func(time.Duration) {})
+	testseam.Swap(t, &docVerifyWait, func(context.Context, time.Duration) error { return nil })
 	helpers.InitDeps(caller)
 	root := &cobra.Command{Use: "dws", SilenceErrors: true, SilenceUsage: true}
 	root.PersistentFlags().Bool("yes", false, "")
