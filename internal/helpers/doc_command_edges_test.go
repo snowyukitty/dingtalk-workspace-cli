@@ -340,6 +340,15 @@ func TestCrossPlatformCoverageDocMediaReadbackDefensiveEdges(t *testing.T) {
 		}
 	})
 
+	t.Run("page identity accepts nested and JSONML block IDs", func(t *testing.T) {
+		if got := docBlockPageIdentity([]any{map[string]any{"element": map[string]any{"blockId": "nested-block"}}}); got != `["nested-block"]` {
+			t.Fatalf("nested block page identity = %q", got)
+		}
+		if got := docBlockPageIdentity([]any{[]any{"p", map[string]any{"uuid": "jsonml-block"}}}); got != `["jsonml-block"]` {
+			t.Fatalf("JSONML block page identity = %q", got)
+		}
+	})
+
 	t.Run("unknown pagination short page", func(t *testing.T) {
 		installScriptedCaller(t, &scriptedToolCaller{steps: []scriptedToolStep{{text: `{"blocks":[{"id":"a"}]}`}}})
 		if blocks, err := readAllDocBlocksForVerification(ctx, "node"); err != nil || len(blocks) != 1 {
