@@ -3,6 +3,7 @@ package helpers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -315,6 +316,27 @@ func TestCrossPlatformCoverageDocMediaReadbackDefensiveEdges(t *testing.T) {
 		blocks, err := readAllDocBlocksForVerification(ctx, "node")
 		if err != nil || len(blocks) != 1 {
 			t.Fatalf("blocks=%#v err=%v", blocks, err)
+		}
+	})
+
+	t.Run("identical adjacent pages advance by requested indexes", func(t *testing.T) {
+		blocks := make([]any, 50)
+		for index := range blocks {
+			blocks[index] = map[string]any{"blockType": "paragraph"}
+		}
+		first, err := json.Marshal(map[string]any{"blocks": blocks, "hasMore": true, "totalCount": 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := json.Marshal(map[string]any{"blocks": blocks, "hasMore": false, "totalCount": 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		caller := &scriptedToolCaller{steps: []scriptedToolStep{{text: string(first)}, {text: string(second)}}}
+		installScriptedCaller(t, caller)
+		got, err := readAllDocBlocksForVerification(ctx, "node")
+		if err != nil || len(got) != 100 || caller.calls != 2 {
+			t.Fatalf("blocks=%d calls=%d err=%v, want 100 blocks from two pages", len(got), caller.calls, err)
 		}
 	})
 

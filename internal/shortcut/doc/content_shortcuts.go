@@ -808,7 +808,7 @@ func readDocVerification(rt *shortcut.RuntimeContext, tool string, rawParams map
 
 func readAllDocumentBlocks(rt *shortcut.RuntimeContext, base map[string]any) (map[string]any, error) {
 	all := make([]any, 0, docBlockReadPageSize)
-	seenPages := map[string]bool{}
+	seenPageIdentities := map[string]bool{}
 	for start := 0; start < docBlockReadMaxItems; start += docBlockReadPageSize {
 		params := cloneMap(base)
 		params["startIndex"] = start
@@ -821,12 +821,13 @@ func readAllDocumentBlocks(rt *shortcut.RuntimeContext, base map[string]any) (ma
 		if !ok {
 			return nil, fmt.Errorf("list_document_blocks 回读缺少 blocks 数组")
 		}
-		encoded, _ := json.Marshal(blocks)
-		pageKey := string(encoded)
-		if pageKey != "[]" && seenPages[pageKey] {
+		pageIdentity := documentBlockPageIdentity(blocks)
+		if pageIdentity != "" && seenPageIdentities[pageIdentity] {
 			return nil, fmt.Errorf("list_document_blocks 分页停滞，无法证明回读完整")
 		}
-		seenPages[pageKey] = true
+		if pageIdentity != "" {
+			seenPageIdentities[pageIdentity] = true
+		}
 		all = append(all, blocks...)
 		hasMore, known, _ := docPageState(page)
 		if known && !hasMore {
@@ -843,6 +844,33 @@ func readAllDocumentBlocks(rt *shortcut.RuntimeContext, base map[string]any) (ma
 		}
 	}
 	return nil, fmt.Errorf("list_document_blocks 超过 %d 个块，无法在安全上限内完成回读", docBlockReadMaxItems)
+}
+
+func documentBlockPageIdentity(blocks []any) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(blocks))
+	for _, value := range blocks {
+		id := ""
+		switch block := value.(type) {
+		case map[string]any:
+			id = blockIdentity(block, "")
+			if id == "" {
+				if element, ok := block["element"].(map[string]any); ok {
+					id = blockIdentity(element, "")
+				}
+			}
+		case []any:
+			id = jsonMLBlockIdentity(block)
+		}
+		if id == "" {
+			return ""
+		}
+		ids = append(ids, id)
+	}
+	encoded, _ := json.Marshal(ids)
+	return string(encoded)
 }
 
 func documentBlockEntries(value any) ([]any, bool) {

@@ -755,7 +755,7 @@ func readAllDocBlocksForVerification(ctx context.Context, nodeID string) ([]any,
 	const pageSize = 50
 	const maxItems = 5000
 	all := make([]any, 0, pageSize)
-	seen := map[string]bool{}
+	seenPageIdentities := map[string]bool{}
 	for start := 0; start < maxItems; start += pageSize {
 		text, err := callMCPToolReturnTextOnServer(ctx, "doc", "list_document_blocks", map[string]any{
 			"nodeId": nodeID, "format": "jsonml", "startIndex": start, "endIndex": start + pageSize - 1,
@@ -772,12 +772,13 @@ func readAllDocBlocksForVerification(ctx context.Context, nodeID string) ([]any,
 		if !ok {
 			return nil, fmt.Errorf("list_document_blocks 回读缺少 blocks 数组")
 		}
-		encoded, _ := json.Marshal(blocks)
-		key := string(encoded)
-		if key != "[]" && seen[key] {
+		pageIdentity := docBlockPageIdentity(blocks)
+		if pageIdentity != "" && seenPageIdentities[pageIdentity] {
 			return nil, fmt.Errorf("list_document_blocks 分页停滞")
 		}
-		seen[key] = true
+		if pageIdentity != "" {
+			seenPageIdentities[pageIdentity] = true
+		}
 		all = append(all, blocks...)
 		hasMore, hasMoreKnown := payload["hasMore"].(bool)
 		if hasMoreKnown && !hasMore {
@@ -794,6 +795,46 @@ func readAllDocBlocksForVerification(ctx context.Context, nodeID string) ([]any,
 		}
 	}
 	return nil, fmt.Errorf("文档块超过安全回读上限")
+}
+
+func docBlockPageIdentity(blocks []any) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(blocks))
+	for _, value := range blocks {
+		id := ""
+		switch block := value.(type) {
+		case map[string]any:
+			id = directDocBlockIdentity(block)
+			if id == "" {
+				if element, ok := block["element"].(map[string]any); ok {
+					id = directDocBlockIdentity(element)
+				}
+			}
+		case []any:
+			if len(block) > 1 {
+				if attributes, ok := block[1].(map[string]any); ok {
+					id = directDocBlockIdentity(attributes)
+				}
+			}
+		}
+		if id == "" {
+			return ""
+		}
+		ids = append(ids, id)
+	}
+	encoded, _ := json.Marshal(ids)
+	return string(encoded)
+}
+
+func directDocBlockIdentity(block map[string]any) string {
+	for _, key := range []string{"blockId", "id", "uuid", "elementId"} {
+		if text, ok := block[key].(string); ok && strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text)
+		}
+	}
+	return ""
 }
 
 func nestedDocMap(data map[string]any) map[string]any {

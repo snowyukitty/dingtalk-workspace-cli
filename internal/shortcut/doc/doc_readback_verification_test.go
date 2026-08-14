@@ -211,6 +211,30 @@ func TestCrossPlatformCoverageDocReadbackDefensiveEdges(t *testing.T) {
 		})
 	}
 
+	t.Run("identical adjacent pages advance by requested indexes", func(t *testing.T) {
+		testseam.Swap(t, &docVerifyDelays, []time.Duration{})
+		blocks := make([]any, docBlockReadPageSize)
+		for index := range blocks {
+			blocks[index] = map[string]any{"blockType": "paragraph"}
+		}
+		caller := &docCoverageCaller{responses: map[string][]map[string]any{"list_document_blocks": {
+			{"blocks": blocks, "hasMore": true, "totalCount": 2 * docBlockReadPageSize},
+			{"blocks": blocks, "hasMore": false, "totalCount": 2 * docBlockReadPageSize},
+		}}}
+		if err := runDocCoverage(t, Update, caller, "--node", "n", "--command", "block_delete", "--block-id", "target", "--yes"); err != nil {
+			t.Fatal(err)
+		}
+		starts := []int{}
+		for _, call := range caller.history {
+			if call.tool == "list_document_blocks" {
+				starts = append(starts, call.params["startIndex"].(int))
+			}
+		}
+		if fmt.Sprint(starts) != "[0 50]" {
+			t.Fatalf("pagination starts = %v, want [0 50]", starts)
+		}
+	})
+
 	t.Run("total count terminates pagination", func(t *testing.T) {
 		testseam.Swap(t, &docVerifyDelays, []time.Duration{})
 		caller := &docCoverageCaller{responses: map[string][]map[string]any{"list_document_blocks": {{"blocks": []any{map[string]any{"id": "other"}}, "totalCount": 1}}}}
