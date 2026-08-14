@@ -346,6 +346,117 @@ func TestCrossPlatformCoverageRecordQueryServicePageBoundariesE2E(t *testing.T) 
 	}
 }
 
+func TestCrossPlatformCoverageRecordQueryFailureAndContinuationBranches(t *testing.T) {
+	t.Run("non-positive window limit", func(t *testing.T) {
+		caller := &upsertByKeyCaller{}
+		helpers.InitDepsForTest(t, caller)
+		rt := shortcut.RuntimeContextForTest(&cobra.Command{Use: "query"}, RecordQuery)
+		if _, err := queryRecordWindow(rt, nil, 0); err == nil {
+			t.Fatal("non-positive record query window limit accepted")
+		}
+	})
+
+	t.Run("initial cursor cycle", func(t *testing.T) {
+		caller := &upsertByKeyCaller{callFn: func(_ int, _, tool string, _ map[string]any) (string, error) {
+			if tool != "query_records" {
+				return "", fmt.Errorf("unexpected tool %s", tool)
+			}
+			return `{"success":true,"data":{"records":[{"recordId":"r1"}],"hasMore":true,"nextCursor":"seed"}}`, nil
+		}}
+		helpers.InitDepsForTest(t, caller)
+		rt := shortcut.RuntimeContextForTest(&cobra.Command{Use: "query"}, RecordQuery)
+		if _, err := queryRecordWindow(rt, map[string]any{"cursor": " seed "}, 2); err == nil || !strings.Contains(err.Error(), "cursor cycle") {
+			t.Fatalf("initial cursor cycle error = %v", err)
+		}
+	})
+
+	t.Run("strict explicit empty shape", func(t *testing.T) {
+		for _, data := range []map[string]any{
+			{"success": true, "status": "success", "data": map[string]any{"unexpected": true}},
+			{"success": true, "status": "success", "data": map[string]any{}, "error": "bad"},
+		} {
+			if explicitEmptyRecordQuery(data) {
+				t.Fatalf("invalid empty-query envelope accepted: %#v", data)
+			}
+		}
+	})
+
+	t.Run("explicit empty page", func(t *testing.T) {
+		caller := &upsertByKeyCaller{callFn: func(_ int, _, _ string, _ map[string]any) (string, error) {
+			return `{"success":true,"status":"success","error":{},"data":{}}`, nil
+		}}
+		helpers.InitDepsForTest(t, caller)
+		rt := shortcut.RuntimeContextForTest(&cobra.Command{Use: "query"}, RecordQuery)
+		window, err := queryRecordWindow(rt, map[string]any{}, 1)
+		if err != nil || len(window.Records) != 0 || window.Pages != 1 || window.HasMore || window.NextCursor != "" {
+			t.Fatalf("explicit empty window=%#v err=%v", window, err)
+		}
+	})
+
+	t.Run("missing records collection", func(t *testing.T) {
+		caller := &upsertByKeyCaller{callFn: func(_ int, _, _ string, _ map[string]any) (string, error) {
+			return `{}`, nil
+		}}
+		helpers.InitDepsForTest(t, caller)
+		rt := shortcut.RuntimeContextForTest(&cobra.Command{Use: "query"}, RecordQuery)
+		if _, err := queryRecordWindow(rt, map[string]any{}, 1); err == nil || !strings.Contains(err.Error(), "missing the records collection") {
+			t.Fatalf("missing records error = %v", err)
+		}
+	})
+
+	t.Run("invalid shortcut limit", func(t *testing.T) {
+		caller := &upsertByKeyCaller{}
+		helpers.InitDepsForTest(t, caller)
+		cmd := &cobra.Command{Use: "query"}
+		cmd.Flags().Int("limit", 0, "")
+		if err := cmd.Flags().Set("limit", "0"); err != nil {
+			t.Fatal(err)
+		}
+		rt := shortcut.RuntimeContextForTest(cmd, RecordQuery)
+		if err := executeRecordQuery(rt, map[string]any{}); err == nil {
+			t.Fatal("invalid shortcut limit accepted")
+		}
+	})
+
+	t.Run("shortcut query failure", func(t *testing.T) {
+		caller := &upsertByKeyCaller{callFn: func(_ int, _, _ string, _ map[string]any) (string, error) {
+			return "", errors.New("query unavailable")
+		}}
+		helpers.InitDepsForTest(t, caller)
+		rt := shortcut.RuntimeContextForTest(&cobra.Command{Use: "query"}, RecordQuery)
+		if err := executeRecordQuery(rt, map[string]any{}); err == nil || !strings.Contains(err.Error(), "query unavailable") {
+			t.Fatalf("shortcut query failure = %v", err)
+		}
+	})
+
+	t.Run("bounded continuation is published", func(t *testing.T) {
+		records := updateFixtureRecords(0, 21, "visible")
+		caller := &upsertByKeyCaller{callFn: func(_ int, _, tool string, args map[string]any) (string, error) {
+			if tool != "query_records" {
+				return "", fmt.Errorf("unexpected tool %s", tool)
+			}
+			return pagedRecordQueryResponse(t, records, args), nil
+		}}
+		payload, err := runRecordQueryShortcutCLI(t, caller, 20)
+		data, _ := payload["data"].(map[string]any)
+		if err != nil || data["hasMore"] != true || data["nextCursor"] != "offset-20" {
+			t.Fatalf("bounded continuation payload=%#v err=%v", payload, err)
+		}
+	})
+
+	t.Run("delete readback rejects continuation", func(t *testing.T) {
+		caller := &upsertByKeyCaller{callFn: func(_ int, _, tool string, _ map[string]any) (string, error) {
+			if tool == "query_records" {
+				return `{"success":true,"data":{"records":[],"hasMore":true,"nextCursor":"unexpected"}}`, nil
+			}
+			return `{"deletedCount":1}`, nil
+		}}
+		if _, err := runRecordDeleteCLI(t, caller, []string{"r1"}); err == nil || len(caller.calls) != 2 || caller.calls[1].tool != "query_records" {
+			t.Fatalf("delete continuation error = %v calls=%#v", err, caller.calls)
+		}
+	})
+}
+
 func TestCrossPlatformCoverageRecordWriteReadbackUsesStableServicePagesE2E(t *testing.T) {
 	for _, operation := range []string{"update", "upsert", "delete"} {
 		for _, size := range []int{21, 22, 100} {

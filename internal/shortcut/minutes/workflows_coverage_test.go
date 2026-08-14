@@ -359,6 +359,12 @@ func TestCrossPlatformCoverageMinutesPermissionLedgerBranchesE2E(t *testing.T) {
 	if err == nil || payload != nil || output != "" || missing.counts["minutes/remove_member_permission"] != 0 {
 		t.Fatalf("missing minutes reached unshare: payload=%#v output=%q err=%v calls=%#v", payload, output, err, missing.counts)
 	}
+
+	preflightFailure := &minutesE2ECaller{failAt: map[string]int{"minutes/get_minutes_basic_info": 1}}
+	payload, output, err = runMinutesAlignmentCLI(t, preflightFailure, "minutes", "+unshare", "--id", "unavailable", "--member-uids", "m1", "--yes")
+	if err == nil || payload != nil || output != "" || preflightFailure.counts["minutes/remove_member_permission"] != 0 {
+		t.Fatalf("failed preflight reached unshare: payload=%#v output=%q err=%v calls=%#v", payload, output, err, preflightFailure.counts)
+	}
 }
 
 func TestCrossPlatformCoverageMinutesArtifactCollectorBranches(t *testing.T) {
