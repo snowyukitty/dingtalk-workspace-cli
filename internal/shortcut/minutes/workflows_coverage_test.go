@@ -323,7 +323,10 @@ func TestCrossPlatformCoverageMinutesPermissionLedgerBranchesE2E(t *testing.T) {
 	if err := runMinutesAlignmentCLIWithWriter(t, &minutesE2ECaller{}, minutesFailWriter{}, "minutes", "+unshare", "--id", "u1", "--member-uids", "m1", "--dry-run"); err == nil {
 		t.Fatal("unshare dry-run output failure accepted")
 	}
-	unshare := &minutesE2ECaller{responses: map[string][]string{"minutes/remove_member_permission": {`{"success":true,"result":{}}`}}}
+	unshare := &minutesE2ECaller{responses: map[string][]string{
+		"minutes/get_minutes_basic_info":   {`{"success":true,"result":{"taskUuid":"u1"}}`},
+		"minutes/remove_member_permission": {`{"success":true,"result":{"resultMap":{"u1":["m1"]}}}`},
+	}}
 	payload, _, err := runMinutesAlignmentCLI(t, unshare, "minutes", "+unshare", "--id", "u1", "--member-uids", "m1", "--yes")
 	if err != nil || payload["complete"] != true || payload["succeeded"] != float64(1) {
 		t.Fatalf("unshare payload=%#v err=%v", payload, err)
@@ -337,10 +340,24 @@ func TestCrossPlatformCoverageMinutesPermissionLedgerBranchesE2E(t *testing.T) {
 	if args["coverPermission"] != "true" || len(args["roleSubResourceIds"].([]string)) != 2 {
 		t.Fatalf("share args=%#v", args)
 	}
-	continueFailure := &minutesE2ECaller{responses: map[string][]string{"minutes/remove_member_permission": {`{"result":{}}`, `{"success":true,"result":{}}`}}}
+	continueFailure := &minutesE2ECaller{responses: map[string][]string{
+		"minutes/get_minutes_basic_info": {`{"success":true,"result":{"taskUuid":"u1"}}`},
+		"minutes/remove_member_permission": {
+			`{"result":{}}`,
+			`{"success":true,"result":{"resultMap":{"u1":["m2"]}}}`,
+		},
+	}}
 	payload, output, err := runMinutesAlignmentCLI(t, continueFailure, "minutes", "+unshare", "--id", "u1", "--member-uids", "m1,m2", "--failure-policy", "continue", "--yes")
 	if err == nil || output == "" || payload["failed"] != float64(1) || payload["succeeded"] != float64(1) {
 		t.Fatalf("continue ledger payload=%#v err=%v", payload, err)
+	}
+
+	missing := &minutesE2ECaller{responses: map[string][]string{
+		"minutes/get_minutes_basic_info": {`{"success":true,"result":{}}`},
+	}}
+	payload, output, err = runMinutesAlignmentCLI(t, missing, "minutes", "+unshare", "--id", "missing", "--member-uids", "m1", "--yes")
+	if err == nil || payload != nil || output != "" || missing.counts["minutes/remove_member_permission"] != 0 {
+		t.Fatalf("missing minutes reached unshare: payload=%#v output=%q err=%v calls=%#v", payload, output, err, missing.counts)
 	}
 }
 

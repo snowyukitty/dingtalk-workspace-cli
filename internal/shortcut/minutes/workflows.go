@@ -614,6 +614,17 @@ func executeMinutesShare(rt *shortcut.RuntimeContext) error {
 }
 
 func executeMinutesUnshare(rt *shortcut.RuntimeContext) error {
+	if !rt.DryRun() {
+		for _, id := range minutesIDs(rt) {
+			data, err := rt.CallMCPData("minutes", "get_minutes_basic_info", map[string]any{"taskUuid": id})
+			if err != nil {
+				return fmt.Errorf("minutes unshare preflight for %s: %w", id, err)
+			}
+			if _, err := minutesdata.Basic(id, data); err != nil {
+				return fmt.Errorf("minutes unshare preflight for %s: %w", id, err)
+			}
+		}
+	}
 	return executeMinutesPermissionLedger(rt, "unshare", "remove_member_permission", func(member string) map[string]any {
 		return map[string]any{"uuids": minutesIDs(rt), "memberUids": []string{member}}
 	})
@@ -631,7 +642,11 @@ func executeMinutesPermissionLedger(rt *shortcut.RuntimeContext, operation, tool
 	for index, member := range members {
 		data, err := rt.CallMCPWriteDataStrict("minutes", tool, params(member))
 		if err == nil {
-			err = minutesdata.RequireWriteAcknowledgement(operation, data)
+			if operation == "unshare" {
+				err = minutesdata.RequirePermissionMutationAcknowledgement(operation, minutesIDs(rt), []string{member}, data)
+			} else {
+				err = minutesdata.RequireWriteAcknowledgement(operation, data)
+			}
 		}
 		if err != nil {
 			failures = append(failures, map[string]any{"memberUid": member, "error": err.Error()})

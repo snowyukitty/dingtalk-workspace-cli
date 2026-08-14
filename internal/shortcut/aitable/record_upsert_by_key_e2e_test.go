@@ -265,6 +265,149 @@ func recordListJSON(t *testing.T, records []map[string]any) string {
 	return string(raw)
 }
 
+func pagedRecordQueryResponse(t *testing.T, records []map[string]any, args map[string]any) string {
+	t.Helper()
+	limit, ok := args["limit"].(int)
+	if !ok || limit < 1 || limit > recordQueryServicePageSize {
+		t.Fatalf("query_records limit = %#v, want 1..%d", args["limit"], recordQueryServicePageSize)
+	}
+	offset := 0
+	if cursor, _ := args["cursor"].(string); cursor != "" {
+		if _, err := fmt.Sscanf(cursor, "offset-%d", &offset); err != nil {
+			t.Fatalf("invalid test cursor %q: %v", cursor, err)
+		}
+	}
+	end := minInt(offset+limit, len(records))
+	pageRecords := records[offset:end]
+	data := map[string]any{"records": pageRecords, "hasMore": end < len(records)}
+	if end < len(records) {
+		data["nextCursor"] = fmt.Sprintf("offset-%d", end)
+	}
+	raw, err := json.Marshal(map[string]any{
+		"success": true,
+		"hasMore": end < len(records),
+		"page":    offset/recordQueryServicePageSize + 1,
+		"size":    limit,
+		"data":    data,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func runRecordQueryShortcutCLI(t *testing.T, caller *upsertByKeyCaller, limit int) (map[string]any, error) {
+	t.Helper()
+	helpers.InitDepsForTest(t, caller)
+	root := &cobra.Command{Use: "dws", SilenceErrors: true, SilenceUsage: true}
+	root.PersistentFlags().Bool("yes", false, "")
+	root.PersistentFlags().Bool("dry-run", false, "")
+	root.PersistentFlags().String("format", "json", "")
+	root.AddCommand(shortcut.Commands()...)
+	stdout := &bytes.Buffer{}
+	root.SetOut(stdout)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"aitable", "+record-query", "--base-id", "base", "--table-id", "table", "--limit", fmt.Sprint(limit)})
+	err := root.Execute()
+	if stdout.Len() == 0 {
+		return nil, err
+	}
+	var payload map[string]any
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &payload); decodeErr != nil {
+		t.Fatalf("decode record query output %q: %v", stdout.String(), decodeErr)
+	}
+	return payload, err
+}
+
+func TestCrossPlatformCoverageRecordQueryServicePageBoundariesE2E(t *testing.T) {
+	for _, size := range []int{20, 21, 22, 100} {
+		t.Run(fmt.Sprintf("size_%d", size), func(t *testing.T) {
+			records := updateFixtureRecords(0, size, "可见")
+			caller := &upsertByKeyCaller{}
+			caller.callFn = func(_ int, _, tool string, args map[string]any) (string, error) {
+				if tool != "query_records" {
+					return "", fmt.Errorf("unexpected tool %s", tool)
+				}
+				return pagedRecordQueryResponse(t, records, args), nil
+			}
+			payload, err := runRecordQueryShortcutCLI(t, caller, size)
+			if err != nil {
+				t.Fatalf("record query size %d: %v", size, err)
+			}
+			data, ok := payload["data"].(map[string]any)
+			if !ok || payload["success"] != true || data["hasMore"] != false || len(data["records"].([]any)) != size {
+				t.Fatalf("record query size %d payload = %#v", size, payload)
+			}
+			wantCalls := (size + recordQueryServicePageSize - 1) / recordQueryServicePageSize
+			if len(caller.calls) != wantCalls || data["page"] != float64(wantCalls) || data["size"] != float64(size) {
+				t.Fatalf("record query size %d calls=%d payload=%#v, want calls=%d", size, len(caller.calls), payload, wantCalls)
+			}
+		})
+	}
+}
+
+func TestCrossPlatformCoverageRecordWriteReadbackUsesStableServicePagesE2E(t *testing.T) {
+	for _, operation := range []string{"update", "upsert", "delete"} {
+		for _, size := range []int{21, 22, 100} {
+			t.Run(fmt.Sprintf("%s_%d", operation, size), func(t *testing.T) {
+				records := updateFixtureRecords(0, size, "完成")
+				caller := &upsertByKeyCaller{}
+				queryCalls := 0
+				caller.callFn = func(_ int, _, tool string, args map[string]any) (string, error) {
+					if tool != "query_records" {
+						return `{"success":true}`, nil
+					}
+					queryCalls++
+					if operation == "delete" {
+						ids := args["recordIds"].([]string)
+						empty := make([]map[string]any, len(ids))
+						response := pagedRecordQueryResponse(t, empty, args)
+						var payload map[string]any
+						if err := json.Unmarshal([]byte(response), &payload); err != nil {
+							t.Fatal(err)
+						}
+						page := payload["data"].(map[string]any)
+						page["records"] = []any{}
+						raw, _ := json.Marshal(payload)
+						return string(raw), nil
+					}
+					response := pagedRecordQueryResponse(t, records, args)
+					var payload map[string]any
+					if err := json.Unmarshal([]byte(response), &payload); err != nil {
+						t.Fatal(err)
+					}
+					page := payload["data"].(map[string]any)
+					if len(page["records"].([]any))+recordQueryServicePageSize*(queryCalls-1) >= size {
+						// The live service can retain a continuation after it has
+						// returned every requested record ID. Exact-ID verification
+						// must use ID coverage, not this advisory bit.
+						page["hasMore"] = true
+						page["nextCursor"] = "ignored-after-complete-id-set"
+						payload["hasMore"] = true
+					}
+					raw, _ := json.Marshal(payload)
+					return string(raw), nil
+				}
+
+				var out string
+				var err error
+				if operation == "delete" {
+					out, err = runRecordDeleteCLI(t, caller, recordIDs(records))
+				} else {
+					out, err = runRecordBatchCLI(t, caller, "+record-"+operation, records)
+				}
+				if err != nil || out == "" {
+					t.Fatalf("%s size %d false negative: output=%q err=%v", operation, size, out, err)
+				}
+				wantQueries := (size + recordQueryServicePageSize - 1) / recordQueryServicePageSize
+				if queryCalls != wantQueries {
+					t.Fatalf("%s size %d query calls=%d, want %d", operation, size, queryCalls, wantQueries)
+				}
+			})
+		}
+	}
+}
+
 func TestCrossPlatformCoverageRecordUpdateAutoChunksAndVerifiesE2E(t *testing.T) {
 	records := updateFixtureRecords(0, 101, "完成")
 	caller := &upsertByKeyCaller{steps: []upsertByKeyStep{
@@ -395,6 +538,10 @@ func TestCrossPlatformCoverageRecordDeleteAutoChunksAndProvesAbsenceE2E(t *testi
 	caller := &upsertByKeyCaller{steps: []upsertByKeyStep{
 		{text: `{"deletedCount":100}`},
 		{text: `{"data":{"records":[]}}`},
+		{text: `{"data":{"records":[]}}`},
+		{text: `{"data":{"records":[]}}`},
+		{text: `{"data":{"records":[]}}`},
+		{text: `{"data":{"records":[]}}`},
 		{text: `{"deletedCount":1}`},
 		{text: `{"data":{"records":[]}}`},
 	}}
@@ -407,7 +554,7 @@ func TestCrossPlatformCoverageRecordDeleteAutoChunksAndProvesAbsenceE2E(t *testi
 			t.Fatalf("delete output missing %s: %s", want, out)
 		}
 	}
-	if len(caller.calls) != 4 || caller.calls[0].tool != "delete_records" || caller.calls[1].tool != "query_records" {
+	if len(caller.calls) != 8 || caller.calls[0].tool != "delete_records" || caller.calls[1].tool != "query_records" || caller.calls[6].tool != "delete_records" {
 		t.Fatalf("delete call sequence = %#v", caller.calls)
 	}
 }
@@ -418,6 +565,17 @@ func TestCrossPlatformCoverageRecordDeleteEmptyReplyRecoveredOnlyByAbsenceE2E(t 
 		out, err := runRecordDeleteCLI(t, caller, []string{"r1"})
 		if err != nil || !strings.Contains(out, `"status": "recovered"`) {
 			t.Fatalf("delete recovered = output:%q err:%v", out, err)
+		}
+	})
+
+	t.Run("explicit service success with empty data proves deletion", func(t *testing.T) {
+		caller := &upsertByKeyCaller{steps: []upsertByKeyStep{
+			{text: `{"deletedCount":1}`},
+			{text: `{"success":true,"status":"success","error":{},"data":{}}`},
+		}}
+		out, err := runRecordDeleteCLI(t, caller, []string{"r1"})
+		if err != nil || !strings.Contains(out, `"status": "verified_absent"`) {
+			t.Fatalf("delete explicit empty success = output:%q err:%v", out, err)
 		}
 	})
 
@@ -449,6 +607,10 @@ func TestCrossPlatformCoverageRecordDeletePartialCheckpointE2E(t *testing.T) {
 	ids := recordIDFixtures(101)
 	caller := &upsertByKeyCaller{steps: []upsertByKeyStep{
 		{text: `{"deletedCount":100}`},
+		{text: `{"records":[]}`},
+		{text: `{"records":[]}`},
+		{text: `{"records":[]}`},
+		{text: `{"records":[]}`},
 		{text: `{"records":[]}`},
 		{text: `{"deletedCount":0}`},
 		{text: `{"records":[{"recordId":"r100","cells":{}}]}`},

@@ -10,13 +10,138 @@ import (
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/shortcut"
 )
 
+// query_records is backed by a service pager whose stable typed-envelope
+// boundary is 20 records. Asking that layer to aggregate more than one page can
+// drop the envelope fields used by the record projector, turning a successful
+// read into an empty collection. Keep every remote request on one service page
+// and aggregate only after each page has passed the CLI's shape validation.
+const recordQueryServicePageSize = 20
+
+type recordQueryWindow struct {
+	Records    []map[string]any
+	HasMore    bool
+	NextCursor string
+	Pages      int
+}
+
+func queryRecordWindow(rt *shortcut.RuntimeContext, params map[string]any, limit int) (recordQueryWindow, error) {
+	if limit <= 0 {
+		return recordQueryWindow{}, fmt.Errorf("record query limit must be positive, got %d", limit)
+	}
+	request := cloneAnyMap(params)
+	cursor, _ := request["cursor"].(string)
+	cursor = strings.TrimSpace(cursor)
+	seen := map[string]bool{}
+	if cursor != "" {
+		seen[cursor] = true
+	}
+	window := recordQueryWindow{Records: make([]map[string]any, 0, limit)}
+
+	for len(window.Records) < limit {
+		pageSize := minInt(recordQueryServicePageSize, limit-len(window.Records))
+		request["limit"] = pageSize
+		if cursor == "" {
+			delete(request, "cursor")
+		} else {
+			request["cursor"] = cursor
+		}
+		data, err := rt.CallMCPData(serverMain, "query_records", request)
+		if err != nil {
+			return recordQueryWindow{}, err
+		}
+		records, found := findRecords(data)
+		if !found {
+			if explicitEmptyRecordQuery(data) {
+				window.Pages++
+				window.HasMore = false
+				window.NextCursor = ""
+				return window, nil
+			}
+			return recordQueryWindow{}, fmt.Errorf("query_records page %d is missing the records collection", window.Pages+1)
+		}
+		window.Records = append(window.Records, records...)
+		window.Pages++
+
+		if !responseHasMore(data) {
+			window.HasMore = false
+			window.NextCursor = ""
+			return window, nil
+		}
+		next := responseCursor(data)
+		if next == "" {
+			return recordQueryWindow{}, fmt.Errorf("query_records page %d reports more data but no next cursor", window.Pages)
+		}
+		if seen[next] {
+			return recordQueryWindow{}, fmt.Errorf("query_records cursor cycle detected at %q", next)
+		}
+		seen[next] = true
+		cursor = next
+		window.HasMore = true
+		window.NextCursor = next
+	}
+
+	return window, nil
+}
+
+// explicitEmptyRecordQuery recognizes the service's reviewed zero-match wire
+// shape. It is deliberately stricter than "records is absent": only a complete
+// success envelope with an empty data object is accepted as an empty set.
+func explicitEmptyRecordQuery(data map[string]any) bool {
+	if data == nil || data["success"] != true || data["status"] != "success" {
+		return false
+	}
+	payload, ok := data["data"].(map[string]any)
+	if !ok || len(payload) != 0 {
+		return false
+	}
+	if rawError, exists := data["error"]; exists && rawError != nil {
+		errorObject, ok := rawError.(map[string]any)
+		if !ok || len(errorObject) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func executeRecordQuery(rt *shortcut.RuntimeContext, params map[string]any) error {
+	limit := 100
+	if rt.Changed("limit") {
+		limit = rt.Int("limit")
+	}
+	if limit < 1 || limit > recordBatchSize {
+		return fmt.Errorf("--limit must be in [1,%d], got %d", recordBatchSize, limit)
+	}
+	window, err := queryRecordWindow(rt, params, limit)
+	if err != nil {
+		return err
+	}
+	records := make([]any, 0, len(window.Records))
+	for _, record := range window.Records {
+		records = append(records, record)
+	}
+	data := map[string]any{
+		"records": records,
+		"hasMore": window.HasMore,
+		"page":    window.Pages,
+		"size":    len(window.Records),
+	}
+	if window.NextCursor != "" {
+		data["nextCursor"] = window.NextCursor
+	}
+	return rt.Output(map[string]any{
+		"success": true,
+		"status":  "success",
+		"data":    data,
+	})
+}
+
 func queryAllRecords(rt *shortcut.RuntimeContext, params map[string]any, maxRecords int) ([]map[string]any, error) {
 	all := make([]map[string]any, 0)
 	cursor := ""
 	seen := map[string]bool{}
 	for page := 0; ; page++ {
 		request := cloneAnyMap(params)
-		request["limit"] = recordBatchSize
+		request["limit"] = recordQueryServicePageSize
 		if cursor != "" {
 			request["cursor"] = cursor
 		}
